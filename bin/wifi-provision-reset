@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+#
+# wifi-provision-reset — testing helper. Forces the Pi back into "never
+# configured" state so the next boot (or the next `systemctl start
+# wifi-provision`) re-opens the setup hotspot.
+#
+# Usage:
+#   sudo wifi-provision-reset            # just remove the marker
+#   sudo wifi-provision-reset --forget "Home Wi-Fi"   # also delete that
+#                                                       saved connection
+set -euo pipefail
+
+MARKER_FILE="${MARKER_FILE:-/var/lib/wifi-provision/configured}"
+
+if [ "$EUID" -ne 0 ]; then
+  echo "Please run as root: sudo wifi-provision-reset" >&2
+  exit 1
+fi
+
+if [ -f "$MARKER_FILE" ]; then
+  rm -f "$MARKER_FILE"
+  echo "Removed marker file: $MARKER_FILE"
+else
+  echo "No marker file present ($MARKER_FILE) — already unconfigured."
+fi
+
+if [ "${1:-}" = "--forget" ] && [ -n "${2:-}" ]; then
+  echo "Deleting saved connection profile: $2"
+  nmcli con delete "$2" || echo "  (no such profile, or already gone)"
+fi
+
+echo "Restart the provisioning service to re-open the setup hotspot now:"
+echo "  sudo systemctl restart wifi-provision.service"
+echo "...or just reboot."

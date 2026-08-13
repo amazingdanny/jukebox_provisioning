@@ -1,0 +1,15 @@
+[Unit]
+Description=Wi-Fi provisioning captive portal
+After=NetworkManager.service
+Wants=NetworkManager.service
+Before=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/opt/wifi-provision/config.env
+ExecStart=/usr/local/bin/wifi-provision
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

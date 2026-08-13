@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+#
+# wifi-provision — main entrypoint, run by systemd (wifi-provision.service)
+# on every boot.
+#
+# 1. If we're already marked configured AND actually online, exit
+#    immediately (fast path — this is what every normal boot does).
+# 2. Otherwise, bring up the setup hotspot and hand off to the portal web
+#    app, which does the nmcli connect/verify/rollback dance and only
+#    exits once the Pi is genuinely online on a real network.
+#
+# All configuration is expected in the process environment (systemd loads
+# it from /opt/wifi-provision/config.env via EnvironmentFile=). Defaults
+# below match config.env.example so this also runs sanely by hand for
+# testing, e.g.:
+#   sudo AP_SSID=Test AP_PASSWORD=testtest /usr/local/bin/wifi-provision
+set -euo pipefail
+
+AP_SSID="${AP_SSID:-PiSetup}"
+AP_CON_NAME="${AP_CON_NAME:-Hotspot}"
+CONNECTIVITY_CHECK_URL="${CONNECTIVITY_CHECK_URL:-http://connectivitycheck.gstatic.com/generate_204}"
+BOOT_CHECK_TIMEOUT="${BOOT_CHECK_TIMEOUT:-20}"
+MARKER_FILE="${MARKER_FILE:-/var/lib/wifi-provision/configured}"
+PORTAL_DIR="${PORTAL_DIR:-/opt/wifi-provision}"
+
+log() {
+  echo "wifi-provision: $*"
+  logger -t wifi-provision "$*" 2>/dev/null || true
+}
+
+# True if we currently have real connectivity, checked via nmcli's own
+# connectivity state plus a direct curl as a second opinion.
+is_online() {
+  if command -v nmcli >/dev/null 2>&1; then
+    state="$(nmcli -t -f CONNECTIVITY g 2>/dev/null || true)"
+    if [ "$state" = "full" ]; then
+      return 0
+    fi
+  fi
+  curl -s -m 3 -o /dev/null "$CONNECTIVITY_CHECK_URL"
+}
+
+# Poll is_online for up to $1 seconds.
+wait_online() {
+  local timeout="$1"
+  local end=$((SECONDS + timeout))
+  while [ "$SECONDS" -lt "$end" ]; do
+    if is_online; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+if [ -f "$MARKER_FILE" ]; then
+  log "marker present ($MARKER_FILE) — checking connectivity before deciding"
+  if wait_online "$BOOT_CHECK_TIMEOUT"; then
+    log "already online, nothing to do"
+    exit 0
+  fi
+  log "marker present but not online (moved networks? password changed?) — falling back to AP mode"
+else
+  log "not yet configured — starting AP mode"
+fi
+
+log "bringing up hotspot '$AP_CON_NAME' (SSID: $AP_SSID)"
+if ! nmcli con up "$AP_CON_NAME"; then
+  log "ERROR: failed to bring up hotspot connection '$AP_CON_NAME'."
+  log "Did install.sh run? Check: nmcli con show $AP_CON_NAME"
+  log "Also check the Wi-Fi regulatory/country code is set (see README)."
+  exit 1
+fi
+
+log "launching provisioning portal from $PORTAL_DIR/app.py"
+cd "$PORTAL_DIR"
+exec python3 app.py

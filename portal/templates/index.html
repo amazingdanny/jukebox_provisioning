@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wi-Fi Setup</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="card">
+    <h1>Connect to Wi-Fi</h1>
+    <p class="sub">
+      You're connected to <strong>{{ ap_ssid }}</strong>, the Pi's temporary
+      setup network. Pick your home Wi-Fi below and enter its password —
+      the Pi will switch over and this hotspot will disappear.
+    </p>
+
+    <form method="post" action="/connect" id="wifi-form">
+      {% if ssids %}
+      <label for="ssid">Network</label>
+      <select name="ssid" id="ssid">
+        {% for s in ssids %}
+        <option value="{{ s }}">{{ s }}</option>
+        {% endfor %}
+        <option value="">Other (type below)&hellip;</option>
+      </select>
+      {% endif %}
+
+      <label for="ssid_manual">
+        {% if ssids %}Network name (if not listed above){% else %}Network name{% endif %}
+      </label>
+      <input type="text" name="ssid_manual" id="ssid_manual" autocomplete="off"
+             {% if not ssids %}required{% endif %} placeholder="Home Wi-Fi">
+
+      <label for="password">Password</label>
+      <input type="password" name="password" id="password" autocomplete="off">
+
+      <button type="submit" id="submit-btn">Connect</button>
+    </form>
+
+    <p class="note" id="waiting" hidden>
+      Trying to connect&hellip; this can take up to 20 seconds. If it fails,
+      this hotspot will come back automatically and you can try again.
+    </p>
+  </main>
+
+  <script>
+    // Manual field wins if filled in; otherwise fall back to the dropdown.
+    // No AJAX here on purpose — a plain form POST keeps this working even
+    // on very old phone browsers joining a captive setup network.
+    document.getElementById('wifi-form').addEventListener('submit', function () {
+      document.getElementById('submit-btn').disabled = true;
+      document.getElementById('waiting').hidden = false;
+    });
+  </script>
+</body>
+</html>
