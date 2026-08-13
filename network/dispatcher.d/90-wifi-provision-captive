@@ -1,0 +1,59 @@
+#!/bin/bash
+#
+# Installed by install.sh to /etc/NetworkManager/dispatcher.d/
+#
+# NetworkManager runs every script in dispatcher.d/ on every interface
+# state change, passing the interface as $1 and the action as $2, plus
+# env vars including $CONNECTION_ID. We only ever act when CONNECTION_ID
+# is our own Hotspot profile — never on the real Wi-Fi connection — so
+# this has zero effect once the Pi is on the user's home network.
+#
+# What it does while the Hotspot is up:
+#   - DNAT tcp/80 to the portal's own address:port. The dnsmasq wildcard
+#     (see network/dnsmasq-shared.d/) already sends most traffic here via
+#     DNS alone; this is a backstop for probes that hit a hardcoded IP.
+#   - REJECT tcp/443 outright. There's no cert to serve, so failing fast
+#     is better than letting the connection hang — the faster an OS's
+#     HTTPS-based probe fails, the faster it decides "captive portal" and
+#     shows the sign-in prompt.
+#
+# Toggle this whole feature off via CAPTIVE_PORTAL=false in config.env
+# and re-run install.sh (it removes this file entirely when disabled).
+
+IFACE="$1"
+ACTION="$2"
+
+CONFIG_FILE=/opt/wifi-provision/config.env
+# shellcheck disable=SC1090
+[ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+AP_CON_NAME="${AP_CON_NAME:-Hotspot}"
+AP_GATEWAY="${AP_GATEWAY:-10.42.0.1}"
+PORTAL_PORT="${PORTAL_PORT:-80}"
+CHAIN="WIFI_PROVISION_CAPTIVE"
+
+# Never touch anything on the real Wi-Fi connection or any other device.
+[ "$CONNECTION_ID" = "$AP_CON_NAME" ] || exit 0
+
+remove_rules() {
+  iptables -t nat -D PREROUTING -i "$IFACE" -j "$CHAIN" 2>/dev/null
+  iptables -t nat -F "$CHAIN" 2>/dev/null
+  iptables -t nat -X "$CHAIN" 2>/dev/null
+  iptables -D INPUT -i "$IFACE" -p tcp --dport 443 -j REJECT --reject-with tcp-reset 2>/dev/null
+}
+
+case "$ACTION" in
+  up)
+    remove_rules  # idempotent: clear any stale state from a previous run first
+    iptables -t nat -N "$CHAIN"
+    iptables -t nat -A "$CHAIN" -p tcp --dport 80 -j DNAT --to-destination "${AP_GATEWAY}:${PORTAL_PORT}"
+    iptables -t nat -A PREROUTING -i "$IFACE" -j "$CHAIN"
+    iptables -I INPUT -i "$IFACE" -p tcp --dport 443 -j REJECT --reject-with tcp-reset
+    logger -t wifi-provision "captive-portal iptables rules installed on $IFACE"
+    ;;
+  down|pre-down)
+    remove_rules
+    logger -t wifi-provision "captive-portal iptables rules removed from $IFACE"
+    ;;
+esac
+
+exit 0

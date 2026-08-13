@@ -29,11 +29,11 @@ if ! systemctl is-active --quiet NetworkManager; then
 fi
 
 echo "== Installing dependencies =="
-if ! dpkg -s network-manager >/dev/null 2>&1 || ! dpkg -s python3-flask >/dev/null 2>&1; then
+if ! dpkg -s network-manager >/dev/null 2>&1 || ! dpkg -s python3-flask >/dev/null 2>&1 || ! dpkg -s iptables >/dev/null 2>&1; then
   apt-get update -qq
-  apt-get install -y network-manager python3-flask
+  apt-get install -y network-manager python3-flask iptables
 else
-  echo "network-manager and python3-flask already installed, skipping apt."
+  echo "network-manager, python3-flask, and iptables already installed, skipping apt."
 fi
 
 echo "== Installing scripts =="
@@ -86,6 +86,8 @@ AP_SSID="${AP_SSID:-PiSetup}"
 AP_PASSWORD="${AP_PASSWORD:-changeme123}"
 AP_IFACE="${AP_IFACE:-wlan0}"
 AP_CON_NAME="${AP_CON_NAME:-Hotspot}"
+AP_GATEWAY="${AP_GATEWAY:-10.42.0.1}"
+CAPTIVE_PORTAL="${CAPTIVE_PORTAL:-true}"
 
 if [ "${#AP_PASSWORD}" -lt 8 ]; then
   echo "ERROR: AP_PASSWORD must be at least 8 characters (WPA-PSK requirement)." >&2
@@ -105,6 +107,22 @@ else
   nmcli con modify "$AP_CON_NAME" wifi-sec.psk "$AP_PASSWORD"
 fi
 
+DNSMASQ_DROPIN=/etc/NetworkManager/dnsmasq-shared.d/wifi-provision-captive.conf
+DISPATCHER_SCRIPT=/etc/NetworkManager/dispatcher.d/90-wifi-provision-captive
+
+echo "== Captive portal auto-popup (CAPTIVE_PORTAL=$CAPTIVE_PORTAL) =="
+if [ "$CAPTIVE_PORTAL" = "true" ]; then
+  mkdir -p /etc/NetworkManager/dnsmasq-shared.d /etc/NetworkManager/dispatcher.d
+  sed "s/AP_GATEWAY_PLACEHOLDER/$(escape_sed_repl "$AP_GATEWAY")/" \
+    "$SCRIPT_DIR/network/dnsmasq-shared.d/wifi-provision-captive.conf" > "$DNSMASQ_DROPIN"
+  install -m 0755 "$SCRIPT_DIR/network/dispatcher.d/90-wifi-provision-captive" "$DISPATCHER_SCRIPT"
+  echo "Installed DNS wildcard + NetworkManager dispatcher script."
+  echo "Takes effect next time the Hotspot connection comes up (down/up if it's already active)."
+else
+  rm -f "$DNSMASQ_DROPIN" "$DISPATCHER_SCRIPT"
+  echo "Disabled — removed any previously installed captive-portal files."
+fi
+
 echo "== Preparing marker directory =="
 mkdir -p "$MARKER_DIR"
 
@@ -118,7 +136,8 @@ cat <<EOF
 Installed.
 
   Setup hotspot SSID:      $AP_SSID
-  Setup portal URL:        http://10.42.0.1   (once connected to the hotspot)
+  Setup portal URL:        http://$AP_GATEWAY   (once connected to the hotspot;
+                           should auto-open on most phones — CAPTIVE_PORTAL=$CAPTIVE_PORTAL)
   Config file:             $CONFIG_FILE
   Force re-provisioning:   sudo wifi-provision-reset
 

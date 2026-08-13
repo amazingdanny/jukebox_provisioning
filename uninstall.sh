@@ -11,6 +11,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 AP_CON_NAME="${AP_CON_NAME:-Hotspot}"
+AP_IFACE="${AP_IFACE:-wlan0}"
 
 echo "== Stopping and disabling service =="
 systemctl stop wifi-provision.service 2>/dev/null || true
@@ -20,6 +21,16 @@ systemctl daemon-reload
 
 echo "== Removing installed scripts =="
 rm -f /usr/local/bin/wifi-provision /usr/local/bin/wifi-provision-reset
+
+echo "== Removing captive-portal files =="
+rm -f /etc/NetworkManager/dnsmasq-shared.d/wifi-provision-captive.conf
+rm -f /etc/NetworkManager/dispatcher.d/90-wifi-provision-captive
+# Best-effort cleanup in case the hotspot was up when this ran (the
+# dispatcher script normally does this on its own "down" event).
+iptables -t nat -D PREROUTING -i "$AP_IFACE" -j WIFI_PROVISION_CAPTIVE 2>/dev/null || true
+iptables -t nat -F WIFI_PROVISION_CAPTIVE 2>/dev/null || true
+iptables -t nat -X WIFI_PROVISION_CAPTIVE 2>/dev/null || true
+iptables -D INPUT -i "$AP_IFACE" -p tcp --dport 443 -j REJECT --reject-with tcp-reset 2>/dev/null || true
 
 read -r -p "Also delete the '$AP_CON_NAME' NetworkManager profile? [y/N] " ans
 if [[ "$ans" =~ ^[yY] ]]; then

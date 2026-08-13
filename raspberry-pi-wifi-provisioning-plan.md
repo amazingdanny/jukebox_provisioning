@@ -379,5 +379,14 @@ during implementation, beyond what's spelled out above:
   updates the existing `Hotspot` profile in place rather than skipping or
   duplicating it, so changing the AP password later is just "edit
   config.env, re-run install.sh."
+- §5's "skip true captive-portal auto-popup for v1" call was later
+  reversed on request — it's now implemented (`CAPTIVE_PORTAL=true` by
+  default) via a `dnsmasq-shared.d` DNS wildcard + a NetworkManager
+  dispatcher script scoped to the `Hotspot` connection only (see
+  `network/` and README.md "Captive portal auto-popup"), rather than
+  wiring iptables calls directly into the provisioning script — this
+  keeps it working even when `Hotspot` is brought up/down manually
+  outside of `wifi-provision`, and makes it a clean opt-out via one
+  config flag instead of scattered logic.
 
 See [README.md](README.md) for the as-built usage/testing instructions.

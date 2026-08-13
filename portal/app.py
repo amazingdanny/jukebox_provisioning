@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 
-from flask import Flask, render_template, request
+from flask import Flask, redirect, render_template, request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import network  # noqa: E402  (local module, see comment above)
@@ -80,6 +80,20 @@ def connect():
     log.warning("Connection to '%s' failed: %s", ssid, detail)
     network.rollback_to_hotspot(CONFIG["AP_CON_NAME"])
     return render_template("failure.html", reason=detail, ap_ssid=CONFIG["AP_SSID"])
+
+
+@app.errorhandler(404)
+def redirect_unknown_to_portal(_error):
+    # Phones probe a handful of well-known URLs to decide whether a
+    # network is a captive portal (captive.apple.com/hotspot-detect.html,
+    # connectivitycheck.gstatic.com/generate_204, msftconnecttest.com/...).
+    # We don't implement any of those specifically — with the DNS
+    # wildcard + iptables redirect (see network/) all of them land here
+    # instead of hitting the real internet, and any URL we don't have a
+    # real route for bounces straight to the form. That mismatch (a
+    # redirect instead of each OS's expected "everything's fine"
+    # response) is exactly what makes the OS pop its sign-in prompt.
+    return redirect("/")
 
 
 def _shutdown_after_delay(delay=3):

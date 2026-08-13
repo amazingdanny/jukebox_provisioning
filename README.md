@@ -43,6 +43,9 @@ wifi-provisioning/
 ├── bin/
 │   ├── wifi-provision            # entrypoint, installed to /usr/local/bin
 │   └── wifi-provision-reset      # testing helper: force AP mode again
+├── network/                      # captive-portal auto-popup, see below
+│   ├── dnsmasq-shared.d/wifi-provision-captive.conf
+│   └── dispatcher.d/90-wifi-provision-captive
 └── portal/
     ├── app.py                    # Flask routes (/. /connect)
     ├── network.py                # all nmcli logic — no Flask dependency
@@ -69,7 +72,7 @@ sudo ./install.sh
 
 This will:
 1. Warn (and ask to confirm) if NetworkManager isn't active.
-2. `apt install network-manager python3-flask` if missing.
+2. `apt install network-manager python3-flask iptables` if missing.
 3. Install `bin/*` to `/usr/local/bin/`, `portal/` to `/opt/wifi-provision/`.
 4. Write `/opt/wifi-provision/config.env` from the example (prompts for
    AP SSID/password/hand-off service name interactively; safe defaults
@@ -77,7 +80,9 @@ This will:
 5. Create (or update, if already present) the `Hotspot` NetworkManager
    connection profile with `ipv4.method shared`, so NetworkManager runs
    DHCP/DNS for AP clients itself — no separate `dnsmasq` config needed.
-6. Install and enable `wifi-provision.service`.
+6. Install the captive-portal DNS wildcard + dispatcher script (unless
+   `CAPTIVE_PORTAL=false` in `config.env`) — see below.
+7. Install and enable `wifi-provision.service`.
 
 Re-running `install.sh` is safe — every step checks before acting, and
 editing `config.env` + re-running picks up SSID/password changes onto the
@@ -174,11 +179,81 @@ Leave it blank to skip this and rely purely on `network-online.target`.
   `authbind`/capabilities). It only exists for the few minutes setup
   takes, then exits.
 
+## Captive portal auto-popup
+
+By default (`CAPTIVE_PORTAL=true` in `config.env`), joining `PiSetup`
+should pop the sign-in page automatically on most phones/laptops, the
+same way hotel/airport Wi-Fi does — no need to manually browse to
+`http://10.42.0.1`. Two pieces make this work, both scoped to only take
+effect while the `Hotspot` connection is actually active:
+
+- **`network/dnsmasq-shared.d/wifi-provision-captive.conf`**, installed
+  to `/etc/NetworkManager/dnsmasq-shared.d/` — makes NetworkManager's
+  internal shared-mode `dnsmasq` answer *every* DNS query from AP clients
+  with the Pi's own address. Each OS's captive-portal probe hostname
+  (`captive.apple.com`, `connectivitycheck.gstatic.com`,
+  `www.msftconnecttest.com`, ...) resolves straight to the Pi instead of
+  timing out.
+- **`network/dispatcher.d/90-wifi-provision-captive`**, installed to
+  `/etc/NetworkManager/dispatcher.d/` — a NetworkManager dispatcher
+  script that fires on every interface state change but only acts when
+  `$CONNECTION_ID` is the `Hotspot` profile (never on your real Wi-Fi).
+  While the AP is up it DNAT's `tcp/80` to the portal (a backstop for any
+  probe that hits a hardcoded IP instead of a hostname) and rejects
+  `tcp/443` outright — no cert to serve, so failing fast beats hanging.
+- In [`portal/app.py`](portal/app.py), any URL that isn't `/`, `/connect`,
+  or a static asset now 404s into a redirect back to `/`. Combined with
+  the above, whichever probe URL a phone hits lands on the Pi and gets
+  bounced to the form — that mismatch (a redirect instead of each OS's
+  expected "everything's fine" response) is what triggers the popup.
+
+**How each OS actually reacts** (so you know what "normal" looks like
+when testing):
+- **iOS/macOS**: expects an exact `Success` body from
+  `captive.apple.com/hotspot-detect.html`; anything else opens the
+  Captive Network Assistant browser automatically, landing on `/`.
+- **Android**: expects exactly `204 No Content` from
+  `connectivitycheck.gstatic.com/generate_204`; anything else shows a
+  "Sign in to Wi-Fi network" notification that opens a browser to `/`.
+- **Windows**: expects exact text from
+  `www.msftconnecttest.com/connecttest.txt`, *and* separately expects
+  `dns.msftncsi.com` to resolve to one specific IP as a DNS-tampering
+  canary — our wildcard answering that with the Pi's IP is itself enough
+  to make Windows flag "limited connectivity" and show a sign-in
+  notification (user still has to click it — Windows doesn't
+  auto-launch a browser the way iOS/Android do).
+
+**Limitations, honestly:** this is inherently a bit fragile — Apple,
+Google, and Microsoft all tweak these probe behaviors across OS versions,
+and devices using encrypted DNS (DoH/DoT) or hardcoded resolvers can
+bypass the DNS wildcard entirely, falling back to the plain manual flow.
+Treat the auto-popup as a convenience on top of the manual fallback, not
+a guarantee.
+
+**Turning it off:** set `CAPTIVE_PORTAL=false` in `/opt/wifi-provision/config.env`
+and re-run `sudo ./install.sh` — it removes both installed files cleanly.
+Falls back to the original v1 behavior: join `PiSetup`, browse to
+`http://10.42.0.1` by hand.
+
+**If you changed something and want it to take effect immediately**
+without waiting for the next AP cycle:
+```bash
+sudo nmcli con down Hotspot && sudo nmcli con up Hotspot
+```
+
+**Troubleshooting:**
+- Portal doesn't auto-open but manual browsing to `http://10.42.0.1`
+  works fine → the redirect/DNS side is working, the specific phone's OS
+  just isn't triggering on it (see limitations above).
+- Nothing works, not even manual browsing → check the dispatcher script
+  actually ran: `journalctl | grep wifi-provision` should show
+  "captive-portal iptables rules installed on wlan0" after `nmcli con up
+  Hotspot`. If it's missing, confirm the file is present, executable, and
+  owned by root: `ls -l /etc/NetworkManager/dispatcher.d/90-wifi-provision-captive`.
+- Check the rules directly: `sudo iptables -t nat -L WIFI_PROVISION_CAPTIVE -n -v`
+  and `sudo iptables -L INPUT -n | grep 443`.
+
 ## v2 ideas (not implemented)
 
-- True captive-portal auto-popup (DNS-wildcarding + iptables redirect of
-  port 80/443, matching Apple/Google/Microsoft connectivity-check probe
-  responses) so phones open the portal automatically instead of the user
-  browsing to `http://10.42.0.1` by hand.
 - HTTPS on the portal (limited value on an AP with no real DNS/CA trust
   anchor, but self-signed + a warning is possible).
