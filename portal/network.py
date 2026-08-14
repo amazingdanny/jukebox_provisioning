@@ -111,19 +111,47 @@ def connect_and_verify(ssid, password, iface, hotspot_con, timeout, check_url):
     responsible for calling rollback_to_hotspot() — this function only
     cleans up the bad connection profile it may have created.
 
+    Builds the connection profile explicitly (con add + con modify) rather
+    than using the `nmcli dev wifi connect ... password ...` shortcut.
+    That shortcut infers the security type from nmcli's cached scan
+    results, which are stale/empty right after leaving AP mode (an
+    interface can't scan while broadcasting as an AP) — nmcli then
+    creates a profile with a password but no key-mgmt set, and
+    NetworkManager rejects it with "802-11-wireless-security.key-mgmt
+    property is missing". Setting key-mgmt explicitly, the same way the
+    Hotspot profile itself is built, avoids depending on that scan cache
+    entirely.
+
     Returns (ok: bool, detail: str).
     """
     hotspot_down(hotspot_con)
     time.sleep(1)  # give the radio a moment to actually release AP mode
 
-    cmd = ["nmcli", "dev", "wifi", "connect", ssid, "ifname", iface]
-    if password:
-        cmd += ["password", password]
+    # Clean up any stale profile of the same name from a previous failed
+    # attempt so `con up` below can't find more than one match.
+    _run(["nmcli", "con", "delete", ssid], timeout=10)
 
-    rc, out, err = _run(cmd, timeout=timeout + 10)
+    rc, out, err = _run(
+        ["nmcli", "con", "add", "type", "wifi", "ifname", iface, "con-name", ssid, "ssid", ssid],
+        timeout=15,
+    )
     if rc != 0:
-        detail = err or out or "nmcli reported failure connecting"
-        log.warning("nmcli connect to '%s' failed (rc=%s): %s", ssid, rc, detail)
+        detail = err or out or "failed to create connection profile"
+        log.warning("nmcli con add for '%s' failed (rc=%s): %s", ssid, rc, detail)
+        return False, detail
+
+    if password:
+        _run(
+            ["nmcli", "con", "modify", ssid, "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password],
+            timeout=10,
+        )
+    # else: leave it with no wifi-sec section at all — a genuinely open network.
+
+    rc, out, err = _run(["nmcli", "con", "up", ssid], timeout=timeout + 10)
+    if rc != 0:
+        detail = err or out or "nmcli reported failure activating connection"
+        log.warning("nmcli con up for '%s' failed (rc=%s): %s", ssid, rc, detail)
+        _run(["nmcli", "con", "delete", ssid], timeout=10)
         return False, detail
 
     if check_connectivity(check_url, timeout=min(timeout, 10)):
