@@ -127,6 +127,13 @@ echo "== Preparing marker directory =="
 mkdir -p "$MARKER_DIR"
 
 echo "== Installing systemd unit =="
+# Defensive: if this path is already a symlink to /dev/null (masked --
+# possibly inherited from a cloned SD card image, or a stray earlier
+# `systemctl mask`), `install` would silently write through it instead
+# of replacing it. Unmask + remove any stale symlink first so we always
+# end up with a real unit file.
+systemctl unmask wifi-provision.service >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/wifi-provision.service
 install -m 0644 "$SCRIPT_DIR/systemd/wifi-provision.service" /etc/systemd/system/wifi-provision.service
 systemctl daemon-reload
 systemctl enable wifi-provision.service
